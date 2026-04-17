@@ -9,10 +9,10 @@ use crate::providers::traits::{
     ToolCall as ProviderToolCall,
 };
 use async_trait::async_trait;
-use futures_util::{StreamExt, stream};
+use futures_util::{stream, StreamExt};
 use reqwest::{
-    Client,
     header::{HeaderMap, HeaderValue, USER_AGENT},
+    Client,
 };
 use serde::{Deserialize, Serialize};
 
@@ -93,7 +93,7 @@ fn zhipu_jwt_bearer(credential: &str) -> Result<String, String> {
 }
 
 fn base64url_no_pad(data: &[u8]) -> String {
-    use base64::engine::{Engine, general_purpose::URL_SAFE_NO_PAD};
+    use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine};
     URL_SAFE_NO_PAD.encode(data)
 }
 
@@ -534,11 +534,19 @@ struct ApiChatResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct UsageInfo {
     #[serde(default)]
     prompt_tokens: Option<u64>,
     #[serde(default)]
     completion_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1957,7 +1965,7 @@ impl Provider for OpenAiCompatibleProvider {
         let usage = chat_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
-            cached_input_tokens: None,
+            cached_input_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
         });
         let choice = chat_response
             .choices
@@ -2100,7 +2108,7 @@ impl Provider for OpenAiCompatibleProvider {
         let usage = native_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
-            cached_input_tokens: None,
+            cached_input_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
         });
         let message = native_response
             .choices
@@ -2576,7 +2584,7 @@ mod tests {
 
     #[test]
     fn zhipu_jwt_header_is_correct() {
-        use base64::engine::{Engine, general_purpose::URL_SAFE_NO_PAD};
+        use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine};
         let result = zhipu_jwt_bearer("myid.mysecret").unwrap();
         let jwt = result.strip_prefix("Bearer ").unwrap();
         let header_b64 = jwt.split('.').next().unwrap();
@@ -2589,7 +2597,7 @@ mod tests {
 
     #[test]
     fn zhipu_jwt_payload_contains_api_key_and_timestamps() {
-        use base64::engine::{Engine, general_purpose::URL_SAFE_NO_PAD};
+        use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine};
         let result = zhipu_jwt_bearer("myapiid.mysecretkey").unwrap();
         let jwt = result.strip_prefix("Bearer ").unwrap();
         let payload_b64 = jwt.split('.').nth(1).unwrap();
@@ -2615,7 +2623,7 @@ mod tests {
 
         // Verify HMAC-SHA256 signature
         let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
-        use base64::engine::{Engine, general_purpose::URL_SAFE_NO_PAD};
+        use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine};
         let sig_bytes = URL_SAFE_NO_PAD.decode(parts[2]).unwrap();
         ring::hmac::verify(&key, signing_input.as_bytes(), &sig_bytes)
             .expect("signature must verify");
@@ -2763,10 +2771,9 @@ mod tests {
             .await
             .expect_err("system-only fallback payload should fail");
 
-        assert!(
-            err.to_string()
-                .contains("requires at least one non-system message")
-        );
+        assert!(err
+            .to_string()
+            .contains("requires at least one non-system message"));
     }
 
     #[test]
